@@ -1,0 +1,140 @@
+---
+# Source: venus-2.0/templates/api-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: zt-necc-server
+  namespace: hundun-prod
+  labels:
+    app: zt-necc-server
+    prometheus: springboot-metrics    
+spec:
+  ports:
+    - port: 8441
+      targetPort: 8441
+      protocol: TCP
+      name: api
+  selector:
+    app: zt-necc-server
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 600
+---
+# Source: venus-2.0/templates/api-service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zt-necc-server
+  namespace: hundun-prod
+  labels:
+    app: zt-necc-server
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  
+  selector:
+    matchLabels:
+      app: zt-necc-server
+  template:
+    metadata:
+      labels:
+        app: zt-necc-server
+      annotations:
+        prometheus.io/scrape: "true"        
+    spec:
+      terminationGracePeriodSeconds: 40
+      nodeSelector:
+        venus: app      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - zt-necc-server
+                topologyKey: kubernetes.io/hostname
+      tolerations:
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 2
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 2                
+      imagePullSecrets:
+      - name: prod-secret-cr
+      initContainers:
+      - name: sidecar
+        image: registry.cn-shanghai.aliyuncs.com/hundun_registry/skywalking-agent-sidecar:hd-8.5.0-v7
+        imagePullPolicy: IfNotPresent
+        command: ["cp", "-r", "/data/agent", "/sidecar"]
+        volumeMounts:
+        - name: sidecar
+          mountPath: /sidecar
+      containers:
+      - name: zt-necc-server
+        image: "hundun-registry-registry.cn-shanghai.cr.aliyuncs.com/hundun_registry/zt-necc-server:21-release-1.0.0.1-dbb293e3"        
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: SW_AGENT_NAMESPACE
+          value: hundun-prod        
+        - name: SW_AGENT_NAME
+          value: zt-necc-server
+        - name: SW_AGENT_COLLECTOR_BACKEND_SERVICES
+          value: skywalking.efk-skywalking.svc.cluster.local:11800
+        - name: PROFILE
+          value: -javaagent:/sidecar/agent/skywalking-agent.jar -XX:+UseContainerSupport  -XX:MaxRAMPercentage=50.0 -XX:+UseG1GC -Dspring.profiles.active=prod -Dspring.cloud.nacos.config.server-addr=nacos-svc.default.svc.cluster.local:8848 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps/oom -XX:OnOutOfMemoryError=/bin/dump-handler-prod
+        - name: FILE
+          value: zt-necc-start-1.0.0.1-SNAPSHOT.jar           
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - '-c'
+              - "curl -X POST http://127.0.0.1:8441/actuator/serviceregistry?status=DOWN -H \"Content-Type: application/vnd.spring-boot.actuator.v2+json;charset=UTF-8\""
+              - sleep 60
+        volumeMounts:        
+        - name: sidecar
+          mountPath: /sidecar               
+        - name: oom-dumpdir
+          mountPath: /dumps/oom               
+        resources:
+          limits:
+            cpu: "4"
+            memory: "2048Mi"    
+          requests:
+            memory: "2048Mi"
+            cpu: "0.1"        
+        ports:
+        - containerPort: 8441
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            port: 8441
+            path: /actuator/health/liveness
+          initialDelaySeconds: 120
+          periodSeconds: 20
+          timeoutSeconds: 10     
+        readinessProbe: 
+          failureThreshold: 10
+          httpGet:
+            port: 8441
+            path: /actuator/health/readiness
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          timeoutSeconds: 10   
+      volumes:
+      - name: sidecar
+        emptyDir: {}      
+      - name: oom-dumpdir
+        emptyDir: {}

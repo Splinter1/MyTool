@@ -1,0 +1,139 @@
+---
+# Source: venus-2.0/templates/web.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-yiwu
+  namespace: hundun-pre
+  labels:
+    app: web-yiwu
+    prometheus: nginx-vts
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+    - port: 9913
+      targetPort: 9913
+      protocol: TCP
+      name: nginx-vts      
+  selector:
+    app: web-yiwu
+---
+# Source: venus-2.0/templates/web.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-yiwu
+  namespace: hundun-pre
+  labels:
+    app: web-yiwu
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  
+  selector:
+    matchLabels:
+      app: web-yiwu
+  template:
+    metadata:
+      labels:
+        app: web-yiwu
+      annotations:
+        prometheus.io/scrape: "true"        
+    spec:
+      nodeSelector:
+        venus: app    
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - web-yiwu
+                topologyKey: kubernetes.io/hostname        
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution: # 硬策略
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - cn-shanghai.172.19.100.20
+      tolerations:
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 2
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 2                 
+      imagePullSecrets:
+      - name: pre-secret-cr  
+      initContainers:
+      - name: setsysctl
+        image: busybox
+        securityContext:
+          privileged: true
+        command:
+        - sh
+        - -c
+        - |
+          sysctl -w net.core.somaxconn=65535
+          sysctl -w net.ipv4.tcp_tw_reuse=1
+          sysctl -w fs.file-max=1048576      
+      containers:
+      - name: nginx-vts-exporter
+        image: "registry.cn-shanghai.aliyuncs.com/hundun_develop_registry/nginx-vts-exporter:0.10.4"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9913
+        resources:
+          limits:
+            memory: "30Mi"
+            cpu: "100m"
+          requests:
+            memory: "30Mi"
+            cpu: "100m"
+        livenessProbe:
+          failureThreshold: 20
+          tcpSocket:
+            port: 9913
+          initialDelaySeconds: 60
+          timeoutSeconds: 60      
+      - name: web-yiwu
+        image: "hundun-registry-registry.cn-shanghai.cr.aliyuncs.com/hundun_registry/web-yiwu:5-release-1.0.0-01792802"
+        imagePullPolicy: IfNotPresent      
+        volumeMounts:
+        - name: waf-config
+          mountPath: "/usr/local/nginx/conf/waf/config.lua"
+          subPath: config.lua
+          readOnly: true          
+        resources:
+          limits:
+            cpu: "4"    
+          requests:
+            memory: "1024Mi"
+            cpu: "0.1" 
+        ports:
+        - containerPort: 80
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/usr/local/nginx/sbin/nginx","-s","quit;"]          
+        livenessProbe:
+          tcpSocket:
+            port: 80
+      volumes:
+      - name: waf-config
+        configMap:
+          name: wafconfig
