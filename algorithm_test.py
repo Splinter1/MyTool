@@ -22,4 +22,5 @@ def script():
 
 
 if __name__ == '__main__':
-    script()
+    for i in range(49):
+        print(i+1)
